@@ -2,6 +2,7 @@ import json
 import math
 from pymongo import MongoClient
 import pandas as pd
+import pyarrow.parquet as pq
 from pymongo.synchronous.database import Database
 
 def connect() -> Database:
@@ -13,15 +14,10 @@ def connect() -> Database:
 
     db = client["sbp"]
 
-    try:
-        db.create_collection('buildings')
-    except Exception as e:
-        print("Collection already exists")
-
-    try:
-        db.create_collection('neighborhoods')
-    except Exception as e:
-        print("Collection already exists")
+    # Fresh slate on every run: drop existing data, then recreate empty.
+    for name in ("buildings", "neighborhoods"):
+        db.drop_collection(name)
+        db.create_collection(name)
 
     return db
 
@@ -55,9 +51,24 @@ def write_neighborhoods(db: Database, neighborhoods: pd.DataFrame, geo: dict):
     db.neighborhoods.insert_many(docs)
     print(f"inserted {db.neighborhoods.count_documents({})} neighborhoods")
 
+def import_buildings(db: Database, file: str, batch_size: int = 50_000):
+    total = 0
+    for batch in pq.ParquetFile(file).iter_batches(batch_size=batch_size):
+        docs = batch.to_pylist()
+        for doc in docs:
+            lon, lat = doc["lon"], doc["lat"]
+            if lon is not None and lat is not None:
+                doc["location"] = {"type": "Point", "coordinates": [lon, lat]}
+        db.buildings.insert_many(docs)
+        total += len(docs)
+        print(f"inserted {total:,} buildings")
+
 if __name__ == "__main__":
     db = connect()
     geo = read_boundaries('./data/neighborhood_boundaries.geojson')
     neighborhoods = read_neighborhoods('./data/neighborhoods_history.parquet')
     write_neighborhoods(db, neighborhoods, geo)
+    import_buildings(db, './data/buildings.parquet')
+
+    
 
