@@ -14,7 +14,6 @@ def connect() -> Database:
 
     db = client["sbp"]
 
-    # Fresh slate on every run: drop existing data, then recreate empty.
     for name in ("buildings", "neighborhoods"):
         db.drop_collection(name)
         db.create_collection(name)
@@ -35,17 +34,35 @@ def read_boundaries(file: str) -> dict:
 def read_neighborhoods(file: str) -> pd.DataFrame:
     df = pd.read_parquet(file)
 
+    df = df.rename(columns={
+        "neighborhood_code": "neighborhood_name",
+        "codering": "neighborhood_code",
+    })
+
     return df
 
-def write_neighborhoods(db: Database, neighborhoods: pd.DataFrame, geo: dict):
+def read_bouwjaar(file: str) -> dict:
+    df = pd.read_parquet(file, columns=[
+        "codering",
+        "bouwjaar_afgelopen_tien_jaar",
+        "bouwjaar_meer_dan_tien_jaar_geleden",
+    ])
+    out = {}
+    for row in df.to_dict("records"):
+        code = row.pop("codering")
+        out[code] = row
+    return out
+
+def write_neighborhoods(db: Database, neighborhoods: pd.DataFrame, geo: dict, bouwjaar: dict):
     docs = neighborhoods.to_dict("records")
 
     for doc in docs:
-        # NaN -> None so Mongo stores BSON null, not a float NaN
+        # enrich the 2024 rows with the building-age fields missing from history
+        if doc.get("year") == 2024:
+            doc.update(bouwjaar.get(doc["neighborhood_code"]) or {})
         for key, value in doc.items():
             if isinstance(value, float) and math.isnan(value):
                 doc[key] = None
-        # merge the matching polygon onto the row (empty dict if no geometry)
         doc.update(geo.get(doc["neighborhood_code"]) or {})
 
     db.neighborhoods.insert_many(docs)
@@ -67,8 +84,7 @@ if __name__ == "__main__":
     db = connect()
     geo = read_boundaries('./data/neighborhood_boundaries.geojson')
     neighborhoods = read_neighborhoods('./data/neighborhoods_history.parquet')
-    write_neighborhoods(db, neighborhoods, geo)
+    bouwjaar = read_bouwjaar('./data/neighborhoods_2024.parquet')
+    write_neighborhoods(db, neighborhoods, geo, bouwjaar)
     import_buildings(db, './data/buildings.parquet')
-
-    
 
