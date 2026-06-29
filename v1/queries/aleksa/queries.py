@@ -1,6 +1,7 @@
 from pymongo import MongoClient
 from pymongo.synchronous.database import Database
 
+
 def connect() -> Database:
     try:
         uri = "mongodb://admin:admin@127.0.0.1:27017/"
@@ -121,65 +122,6 @@ def query5(db: Database) -> None:
         {
             "$match": {
                 "year": 2024,
-                "neighborhood_code": { "$regex": "^BU" },
-                "gemiddelde_woz_waarde_van_woningen": {"$ne": None},
-            }
-        },
-        {
-            "$lookup": {
-                "from": "buildings",
-                "let": {"code": "$neighborhood_code"},
-                "pipeline": [
-                    {
-                        "$match": {
-                            "$expr": {
-                                "$eq": ["$neighborhood_code", "$$code"],
-                            },
-                        },
-                    },
-                    {
-                        "$count": "building_count",
-                    }
-                ],
-                "as": "building_count"
-            },
-        },
-        {
-            "$project": {
-                "neighborhood_code": 1,
-                "oppervlakte_totaal": 1,
-                "municipality_code": { "$concat": ["GM", { "$substrBytes": ["$neighborhood_code", 2, 4] }] },
-                "building_count": { "$first": "$building_count.building_count" },   # array -> number
-                "density": {
-                    "$divide": [
-                        { "$ifNull": [{ "$first": "$building_count.building_count" }, 0] },
-                        { "$divide": ["$oppervlakte_totaal", 100] }
-                    ]
-                }
-            }
-        },
-        {
-            "$setWindowFields": {
-                "partitionBy": "$municipality_code",
-                "sortBy": { "density": -1 },
-                "output": {
-                    "rank_in_municipality": { "$rank": {} }
-                }
-            }
-        },
-        {
-            "$limit": 10
-        }
-    ]
-
-    for row in db.neighborhoods.aggregate(pipeline):
-        print(row)
-
-def query5alt(db: Database) -> None:
-    pipeline = [
-        {
-            "$match": {
-                "year": 2024,
                 "neighborhood_code": {"$regex": "^BU"},
                 "oppervlakte_totaal": {"$gt": 0},
             }
@@ -256,6 +198,163 @@ def query5alt(db: Database) -> None:
     for row in db.neighborhoods.aggregate(pipeline):
         print(row)
 
+def query7(db: Database) -> None:
+    pipeline = [
+        {
+            "$match": {
+                "year": 2024,
+                "neighborhood_code": { "$regex": "^BU" },
+                "gemiddelde_woz_waarde_van_woningen": {"$ne": None},
+                "20_personen_met_hoogste_inkomen": { "$ne": None},
+                "bouwjaar_afgelopen_tien_jaar": { "$ne": None}
+            }
+        },
+        {
+            "$group": {
+                "_id": None,
+                "neighborhoods": {
+                    "$push": {
+                        "code": "$neighborhood_code",
+                        "area": "$oppervlakte_totaal",
+                        "avg_value": "$gemiddelde_woz_waarde_van_woningen",
+                        "distance_sum": { "$add": [ "$afstand_tot_grote_supermarkt", "$afstand_tot_huisartsenpraktijk", "$afstand_tot_kinderdagverblijf", "$afstand_tot_school" ]},
+                        "percentage_top_20_people": "$20_personen_met_hoogste_inkomen",
+                        "percentage_new_buildings": "$bouwjaar_afgelopen_tien_jaar"
+                    },
+                },
+            }
+        },
+        {
+            "$lookup": {
+                "from": "buildings",
+                "pipeline": [
+                    { "$match": { "neighborhood_code": { "$ne": None} } },
+                    { "$group": { "_id": "$neighborhood_code", "count": { "$sum": 1 }, "avg_floor_area": {"$avg": "$floor_area_m2"} } },
+                    { "$project": { "_id": 0, "code": "$_id", "count": 1, "avg_floor_area": 1 } }
+                ],
+                "as": "counts"
+            }
+        },
+        {
+            "$project": {
+                "items": {
+                    "$concatArrays": [
+                        "$neighborhoods",
+                        "$counts"
+                    ]
+                }
+            }
+        },
+        {
+            "$project": {
+                "items": 1,
+                "_id": 0
+            }
+        },
+        {
+            "$unwind": "$items",
+        },
+        {
+            "$group": {
+                "_id": "$items.code",
+                "doc": { "$mergeObjects": "$items" }
+            }
+        },
+        {
+            "$replaceRoot": { "newRoot": "$doc" }
+        },
+        {
+            "$match": {
+                "avg_value": { "$exists": True }
+            }
+        },
+        {
+            "$addFields": {
+                "density": {
+                    "$divide": [ "$count",  { "$divide": ["$area", 100] } ]
+                }
+            }
+        },
+        {
+            "$setWindowFields": {
+                "output": {
+                    "avg_income": { "$avg": "$percentage_top_20_people" },
+                    "avg_new_buildings": { "$avg":  "$percentage_new_buildings"}
+                }
+            }
+        },
+        {
+            "$addFields": {
+                "above_avg_income": {
+                    "$cond": {
+                        "if": { "$gt": [ "$percentage_top_20_people", "$avg_income" ] },
+                        "then": 1,
+                        "else": 0
+                    }
+                },
+                "above_avg_new_buildings": { 
+                    "$cond": {
+                        "if": { "$gt": [ "$percentage_new_buildings", "$avg_new_buildings" ] },
+                        "then": 1,
+                        "else": 0
+                    }
+                }
+            }
+        },
+        {
+            "$group": {
+                "_id": { "income": "$above_avg_income", "age": "$above_avg_new_buildings" },
+                "neighborhoods": { "$sum": 1},
+                "avg_floor_area": {"$avg": "$avg_floor_area"},
+                "avg_density": {"$avg": "$density"},
+                "avg_value": {"$avg": "$avg_value"},
+                "avg_distance": {"$avg": "$distance_sum"},
+            }
+        }
+    ]
+
+    for row in db.neighborhoods.aggregate(pipeline):
+        print(row)
+
+def query9(db: Database) -> None:
+    pipeline = [
+        {
+            "$match": {
+                "year": 2024,
+                "neighborhood_code": {"$regex": "^BU"},
+                "woningvoorraad": {"$ne": None},
+                "bouwjaar_meer_dan_tien_jaar_geleden": {"$ne": None},
+                "gemiddeld_aardgasverbruik": {"$ne": None},
+            }
+        },
+        {
+            "$addFields": {
+                "priority": {
+                    "$multiply": [
+                        "$woningvoorraad",
+                        {"$divide": ["$bouwjaar_meer_dan_tien_jaar_geleden", 100]},
+                        "$gemiddeld_aardgasverbruik",
+                    ]
+                }
+            }
+        },
+        {
+            "$project": {
+                "_id": 0,
+                "neighborhood_code": 1,
+                "neighborhood_name": 1,
+                "woningvoorraad": 1,
+                "pct_old": "$bouwjaar_meer_dan_tien_jaar_geleden",
+                "avg_gas": "$gemiddeld_aardgasverbruik",
+                "priority": 1,
+            }
+        },
+        {"$sort": {"priority": -1}},
+        {"$limit": 20},
+    ]
+
+    for row in db.neighborhoods.aggregate(pipeline):
+        print(row)
 
 if __name__ == "__main__":
     db = connect()
@@ -270,4 +369,11 @@ if __name__ == "__main__":
 
     # 5. Koji kvartovi imaju najveću stvarnu gustinu izgrađenosti (broj zgrada po km²)
     # i kako se rangiraju unutar svoje opštine?
-    query5alt(db)
+    # query5(db)
+
+    # Kako izgledaju kvartovi podeljeni u četiri grupe po starosti fonda i visini prihoda 
+    # i koje su im ključne karakteristike (kvadratura, gustina, vrednost, pristupačnost)?
+    # query7(db)
+
+    # Koji su kvartovi prioritet za energetsku obnovu na osnovu starosti fonda, potrošnje gasa i broja stanova?
+    query9(db)
