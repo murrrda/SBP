@@ -49,6 +49,10 @@ def read_enrichment(file: str) -> dict:
         "bouwjaar_afgelopen_tien_jaar",
         "bouwjaar_meer_dan_tien_jaar_geleden",
         "gemiddeld_aardgasverbruik",
+        "aardgaswoningen",
+        "woningen_hoofdz_elektr_verwarmd",
+        "woningen_met_zonnestroom",
+        "percentage_woningen_met_stadsverwarming",
     ])
     out = {}
     for row in df.to_dict("records"):
